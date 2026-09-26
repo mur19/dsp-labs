@@ -8,3 +8,5 @@ Debug/
 cc_build_*.log
 project.log
 Debug.lkf
+.claude/
+.theia/
