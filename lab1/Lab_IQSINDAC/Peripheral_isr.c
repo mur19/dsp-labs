@@ -24,7 +24,7 @@ interrupt void timer0_isr(void) {
     gpio0_set();
 
 	SIN_Value = _IQsin(Time);
-	SIN_Value =  _IQmpy(SIN_Value,_IQ(0.5));
+	SIN_Value =  _IQmpy(SIN_Value,_IQ(0.333));
 //	if (SIN_Value > _IQ(0.999)) SIN_Value = _IQ(0.999);
 //	if (SIN_Value < _IQ(-0.999)) SIN_Value = _IQ(-0.999);
 
