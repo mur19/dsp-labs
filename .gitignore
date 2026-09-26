@@ -10,3 +10,4 @@ project.log
 Debug.lkf
 .claude/
 .theia/
+*/tools/*.exe
