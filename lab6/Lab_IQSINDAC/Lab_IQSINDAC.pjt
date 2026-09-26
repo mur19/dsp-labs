@@ -1,0 +1,25 @@
+; Code Composer Project File, Version 2.0 (do not modify or remove this line)
+
+[Project Settings]
+ProjectDir="D:\CCStudio_v3.3\MyProjects\28335\Lab_IQSINDAC\"
+ProjectType=Executable
+CPUFamily=TMS320C28XX
+Tool="Compiler"
+Tool="CustomBuilder"
+Tool="DspBiosBuilder"
+Tool="Linker"
+Config="Debug"
+Config="Release"
+
+["Compiler" Settings: "Debug"]
+Options=-g -pdsw225 -fr"$(Proj_dir)\Debug" -d"_DEBUG" -d"LARGE_MODEL" -ml -v28
+
+["Compiler" Settings: "Release"]
+Options=-pdsw225 -o3 -fr"$(Proj_dir)\Release" -d"LARGE_MODEL" -ml -v28
+
+["Linker" Settings: "Debug"]
+Options=-c -m".\Debug\Lab_IQSINDAC.map" -o".\Debug\Lab_IQSINDAC.out" -w -x
+
+["Linker" Settings: "Release"]
+Options=-c -m".\Release\Lab_IQSINDAC.map" -o".\Release\Lab_IQSINDAC.out" -w -x
+

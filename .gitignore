@@ -1,0 +1,10 @@
+Debug/
+*.obj
+*.d
+*.map
+*.out
+*.lkf
+*.CS_
+cc_build_*.log
+project.log
+Debug.lkf
