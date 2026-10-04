@@ -13,15 +13,26 @@ void DAC_1_Write(int Value);
 
 #define PI 3.1415926535
 
-#define SIN_METHOD_CHEBYSHEV 1
+// #define SIN_METHOD_CHEBYSHEV 1
 #define SIN_METHOD_CORDIC 2
 #define SIN_METHOD SIN_METHOD_CORDIC
 
 double A1;
+_iq SIN_value_prev;
+_iq diff_sin, int_sin;
 int epwm1_irq_cnt;
 _iq SIN_Value;
-int DAC_Value;
+int DAC_Value_1, DAC_Value_0;
 extern _iq Time_Delta, Time;
+int i;
+
+static void reducer(_iq *x)
+{
+	if (*x > _IQ(0.999))
+		*x = _IQ(0.999);
+	if (*x < _IQ(-0.999))
+		*x = _IQ(-0.999);
+}
 
 static _iq quadrant_reduce(_iq theta, int *sign)
 {
@@ -45,18 +56,18 @@ static _iq quadrant_reduce(_iq theta, int *sign)
 	}
 }
 
-static _iq sin_chebyshev(_iq theta)
-{
-	int sign;
-	_iq x = _IQdiv(quadrant_reduce(theta, &sign), _IQ(PI / 2));
-	_iq x2 = _IQmpy(x, x);
-	_iq x3 = _IQmpy(x2, x);
-	_iq x4 = _IQmpy(x2, x2);
-	_iq x5 = _IQmpy(x4, x);
-	_iq poly = _IQmpy(_IQ(1.57035062), x) + _IQmpy(_IQ(0.00508719), x2) - _IQmpy(_IQ(0.66666099), x3) + _IQmpy(_IQ(0.03610310), x4) + _IQmpy(_IQ(0.05512166), x5);
+// static _iq sin_chebyshev(_iq theta)
+// {
+// 	int sign;
+// 	_iq x = _IQdiv(quadrant_reduce(theta, &sign), _IQ(PI / 2));
+// 	_iq x2 = _IQmpy(x, x);
+// 	_iq x3 = _IQmpy(x2, x);
+// 	_iq x4 = _IQmpy(x2, x2);
+// 	_iq x5 = _IQmpy(x4, x);
+// 	_iq poly = _IQmpy(_IQ(1.57035062), x) + _IQmpy(_IQ(0.00508719), x2) - _IQmpy(_IQ(0.66666099), x3) + _IQmpy(_IQ(0.03610310), x4) + _IQmpy(_IQ(0.05512166), x5);
 
-	return (sign > 0) ? poly : -poly;
-}
+// 	return (sign > 0) ? poly : -poly;
+// }
 
 #define CORDIC_ITERATIONS 14
 #define CORDIC_K_IDEAL _IQ(0.60725293500888)
@@ -122,10 +133,20 @@ static _iq sin_cordic(_iq theta)
 	return (sign > 0) ? y : -y;
 }
 
+static _iq diff(_iq f_curr, _iq f_prev, _iq dT)
+{
+	return _IQdiv((f_curr - f_prev), dT);
+}
+
+static _iq integr(_iq f_curr, _iq F_prev, _iq dT)
+{
+	return F_prev + _IQmpy(dT, f_curr);
+}
+
 interrupt void timer0_isr(void)
 {
 
-	A1 = 0.5;
+	A1 = 1;
 
 	gpio0_clear();
 
@@ -136,15 +157,28 @@ interrupt void timer0_isr(void)
 #endif
 	SIN_Value = _IQmpy(SIN_Value, _IQ(A1));
 
-	if (SIN_Value > _IQ(0.999))
-		SIN_Value = _IQ(0.999);
-	if (SIN_Value < _IQ(-0.999))
-		SIN_Value = _IQ(-0.999);
+	reducer(&SIN_Value);
+
+	if (Time != 0)
+	{
+		diff_sin = diff(SIN_Value, SIN_value_prev, Time_Delta);
+		reducer(&diff_sin);
+
+		int_sin = integr(SIN_Value, int_sin, Time_Delta);
+		reducer(&int_sin);
+	}
+
+	SIN_value_prev = SIN_Value;
 
 	gpio0_set();
 
-	DAC_Value = _IQtoQ11(SIN_Value);
-	DAC_1_Write(DAC_Value);
+	DAC_Value_1 = _IQtoQ11(SIN_Value);
+	DAC_1_Write(DAC_Value_1);
+	if (Time != 0)
+	{
+		DAC_Value_0 = _IQtoQ11(diff_sin);
+		DAC_1_Write(DAC_Value_0);
+	}
 
 	Time = Time + Time_Delta;
 	if (Time >= _IQ(2 * PI))
