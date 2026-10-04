@@ -18,15 +18,18 @@ void DAC_1_Write(int Value);
 #define SIN_METHOD SIN_METHOD_CORDIC
 
 double A1;
-_iq SIN_value_prev;
-_iq diff_sin, int_sin;
+_iq sin_value_prev;
+_iq differentiation_sin;
+_iq differentiation_second_sin;
+_iq int_sin = _IQ(-1);
+_iq diff_prev = _IQ(1); 
 int epwm1_irq_cnt;
-_iq SIN_Value;
+_iq sin_value;
 int DAC_Value_1, DAC_Value_0;
-extern _iq Time_Delta, Time;
+extern _iq time_delta, time;
 int i;
 
-static void reducer(_iq *x)
+static void Reducer(_iq *x)
 {
 	if (*x > _IQ(0.999))
 		*x = _IQ(0.999);
@@ -34,7 +37,7 @@ static void reducer(_iq *x)
 		*x = _IQ(-0.999);
 }
 
-static _iq quadrant_reduce(_iq theta, int *sign)
+static _iq QuadrantReduce(_iq theta, int *sign)
 {
 	_iq quadrant_q = _IQdiv(theta, _IQ(PI / 2));
 	long quadrant = _IQint(quadrant_q);
@@ -59,7 +62,7 @@ static _iq quadrant_reduce(_iq theta, int *sign)
 // static _iq sin_chebyshev(_iq theta)
 // {
 // 	int sign;
-// 	_iq x = _IQdiv(quadrant_reduce(theta, &sign), _IQ(PI / 2));
+// 	_iq x = _IQdiv(QuadrantReduce(theta, &sign), _IQ(PI / 2));
 // 	_iq x2 = _IQmpy(x, x);
 // 	_iq x3 = _IQmpy(x2, x);
 // 	_iq x4 = _IQmpy(x2, x2);
@@ -72,7 +75,7 @@ static _iq quadrant_reduce(_iq theta, int *sign)
 #define CORDIC_ITERATIONS 14
 #define CORDIC_K_IDEAL _IQ(0.60725293500888)
 
-static _iq CORDIC_K_REAL(void)
+static _iq CordicKReal(void)
 {
 	_iq K = _IQ(1.0);
 	_iq poww = _IQ(1.0);
@@ -92,17 +95,17 @@ static const _iq cordic_atan_table[CORDIC_ITERATIONS] = {
 	_IQ(0.001953122516479), _IQ(0.000976562189559), _IQ(0.000488281211195),
 	_IQ(0.000244140620149), _IQ(0.000122070311894)};
 
-static _iq sin_cordic(_iq theta)
+static _iq SinCordic(_iq theta)
 {
 	int sign;
 	_iq z = _IQ(0.0);
 	_iq x = CORDIC_K_IDEAL;
-	// _iq x = CORDIC_K_REAL();
+	// _iq x = CordicKReal();
 	_iq y = 0;
 	int i;
 	_iq poww = _IQ(1.0);
 
-	theta = quadrant_reduce(theta, &sign);
+	theta = QuadrantReduce(theta, &sign);
 
 	for (i = 0; i < CORDIC_ITERATIONS; i++)
 	{
@@ -133,15 +136,25 @@ static _iq sin_cordic(_iq theta)
 	return (sign > 0) ? y : -y;
 }
 
-static _iq diff(_iq f_curr, _iq f_prev, _iq dT)
+static _iq DifferentiationFirst(_iq f_curr, _iq f_prev, _iq dT)
 {
 	return _IQdiv((f_curr - f_prev), dT);
 }
 
-static _iq integr(_iq f_curr, _iq F_prev, _iq dT)
+static _iq DifferentiationSecond(_iq diff_curr, _iq diff_prev, _iq dT)
 {
-	return F_prev + _IQmpy(dT, f_curr);
+	return _IQdiv((diff_curr - diff_prev), dT);
 }
+
+static _iq RectangularIntegration(_iq f_curr, _iq f_prev, _iq int_prev, _iq dT)
+{
+	return int_prev + _IQmpy(dT, f_curr);
+}
+
+static _iq TrapezoidIntegration(_iq f_curr, _iq f_prev, _iq int_prev, _iq dT)
+{  
+	return int_prev + _IQmpy(dT, (f_curr + f_prev) >> 1);
+} 
 
 interrupt void timer0_isr(void)
 {
@@ -151,39 +164,43 @@ interrupt void timer0_isr(void)
 	gpio0_clear();
 
 #if SIN_METHOD == SIN_METHOD_CHEBYSHEV
-	SIN_Value = sin_chebyshev(Time);
+	sin_value = sin_chebyshev(time);
 #else
-	SIN_Value = sin_cordic(Time);
+	sin_value = SinCordic(time);
 #endif
-	SIN_Value = _IQmpy(SIN_Value, _IQ(A1));
+	sin_value = _IQmpy(sin_value, _IQ(A1));
 
-	reducer(&SIN_Value);
+	Reducer(&sin_value);
 
-	if (Time != 0)
+	if (time != 0)
 	{
-		diff_sin = diff(SIN_Value, SIN_value_prev, Time_Delta);
-		reducer(&diff_sin);
+		differentiation_sin = DifferentiationFirst(sin_value, sin_value_prev, time_delta);
 
-		int_sin = integr(SIN_Value, int_sin, Time_Delta);
-		reducer(&int_sin);
+		differentiation_second_sin = DifferentiationSecond(differentiation_sin, diff_prev, time_delta);
+		diff_prev = differentiation_sin;
+		Reducer(&differentiation_sin);
+		int_sin = RectangularIntegration(sin_value, sin_value_prev, int_sin, time_delta);
+		Reducer(&int_sin);
+
+		// int_sin = TrapezoidIntegration(sin_value, sin_value_prev, int_sin, time_delta);
 	}
 
-	SIN_value_prev = SIN_Value;
+	sin_value_prev = sin_value;
 
 	gpio0_set();
 
-	DAC_Value_1 = _IQtoQ11(SIN_Value);
+	DAC_Value_1 = _IQtoQ11(sin_value);
 	DAC_1_Write(DAC_Value_1);
-	if (Time != 0)
+	if (time != 0)
 	{
-		DAC_Value_0 = _IQtoQ11(diff_sin);
+		DAC_Value_0 = _IQtoQ11(differentiation_sin);
 		DAC_1_Write(DAC_Value_0);
 	}
 
-	Time = Time + Time_Delta;
-	if (Time >= _IQ(2 * PI))
+	time = time + time_delta;
+	if (time >= _IQ(2 * PI))
 	{
-		Time = Time - _IQ(2 * PI);
+		time = time - _IQ(2 * PI);
 	}
 
 	// Timer0 Interrupt Flag Clear
