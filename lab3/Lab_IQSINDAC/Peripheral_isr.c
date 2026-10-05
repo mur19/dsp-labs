@@ -179,10 +179,10 @@ interrupt void timer0_isr(void)
 		differentiation_second_sin = DifferentiationSecond(differentiation_sin, diff_prev, time_delta);
 		diff_prev = differentiation_sin;
 		Reducer(&differentiation_sin);
-		int_sin = RectangularIntegration(sin_value, sin_value_prev, int_sin, time_delta);
-		Reducer(&int_sin);
-
-		// int_sin = TrapezoidIntegration(sin_value, sin_value_prev, int_sin, time_delta);
+		rectan_int_sin = RectangularIntegration(sin_value, sin_value_prev, int_sin, time_delta);
+		trapezoid_int_sin = TrapezoidIntegration(sin_value, sin_value_prev, int_sin, time_delta);
+		Reducer(&rectan_int_sin);
+		Reducer(&trapezoid_int_sin);
 	}
 
 	sin_value_prev = sin_value;
