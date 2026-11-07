@@ -1,4 +1,4 @@
-#include "Timer.h"
+#include "timer.h"
 #include "Peripheral_isr.h"
 // #include "PWM.h"
 // #include "QEP.h"
@@ -22,7 +22,7 @@ double A1;
 int epwm1_irq_cnt;
 _iq SIN_Value;
 int DAC_Value;
-extern _iq time_delta, time;
+extern _iq Time_Delta, Time;
 
 static _iq quadrant_reduce(_iq theta, int *sign)
 {
@@ -134,15 +134,36 @@ unsigned long Sinc_Diff[K];
 unsigned long Sinc_Diff_Prev[K];
 int Sinc_Count = 0;
 
+
+
 _iq Sinc_A_Norm;
+
+void sinc_init(void)
+{
+    int i;
+
+    Sinc_A_Norm = _IQ(1.0);
+
+    for (i = 0; i < K; i++)
+    {
+        Sinc_A_Norm = Sinc_A_Norm / FOSR;
+    }
+}
+
+
+
+
 int Sinc_DW;
 _iq Sinc_Out;
 int Sinc_Ready;
 int DAC_Sinc_Value;
 
+
+
+
 void sinc_filter(_iq x)
 {
-    unsigned long v;
+    unsigned long x_scale;
 //    unsigned long v_prev;
     unsigned long in;
     int i;
@@ -150,15 +171,18 @@ void sinc_filter(_iq x)
     Sinc_Ready = 0;
 
     // IQ (Q28) -> входной код с IN_BITS битами после запятой
-    v = x >> (GLOBAL_Q - IN_BITS);
+    x_scale = x >> (GLOBAL_Q - IN_BITS);
 
     for (i = K - 1; i > 0; i--)
     {
         Sinc_Integr[i] = Sinc_Integr[i] + Sinc_Integr[i - 1];
     }
-    Sinc_Integr[0] = Sinc_Integr[0] + v;
+
+    Sinc_Integr[0] = Sinc_Integr[0] + x_scale;
 
     Sinc_Count = Sinc_Count + 1;
+
+
     if (Sinc_Count == FOSR)
     {
         Sinc_Count = 0;
@@ -175,11 +199,9 @@ void sinc_filter(_iq x)
             Sinc_Diff_Prev[i] = in;
         }
 
-//        for (i = 0; i < K; i++) {
-//            Sinc_A_Norm = _IQdiv(Sinc_A_Norm, FOSR);
-//        }
         // нормировка и обратно в IQ (Q28)
-        Sinc_Out = _IQmpy((long)v, Sinc_A_Norm) << (GLOBAL_Q - IN_BITS);
+        Sinc_Out = _IQmpy((long)Sinc_Diff[K - 1], Sinc_A_Norm)
+           * (1L << (GLOBAL_Q - IN_BITS));
         Sinc_Ready = 1;
     }
 }
@@ -195,7 +217,7 @@ int Afc_Run = 1;       // 1 - идёт измерение; чтобы повто
 int Afc_Index = 0;     // номер текущей точки j
 int Afc_Count = 0;     // выходных отсчётов на текущей точке
 _iq Afc_Peak = 0;
-_iq Afc_Delta_Saved;   // time_delta до начала измерения, восстанавливается после
+_iq Afc_Delta_Saved;   // Time_Delta до начала измерения, восстанавливается после
 
 // f_j / FS
 static _iq afc_u(int j)
@@ -240,7 +262,7 @@ static void afc_init(void)
 
     for (j = 0; j < AFC_N; j++)
     {
-        Afc_Freq[j] = (2 * j + 1) / (time_delta * 4 * AFC_N); // (j + 0.5)*Fs/(2*AFC_N)
+        Afc_Freq[j] = (2 * j + 1) / (Time_Delta * 4 * AFC_N); // (j + 0.5)*Fs/(2*AFC_N)
         Afc_Theory[j] = afc_theory(afc_u(j));
         Afc_Meas[j] = 0;
     }
@@ -259,8 +281,8 @@ static void afc_step(void)
     // начало измерения: запоминаем частоту сигнала, ставим первую точку
     if (Afc_Index == 0 && Afc_Count == 0)
     {
-        Afc_Delta_Saved = time_delta;
-        time_delta = _IQmpy(_IQ(2 * PI), afc_u(0)); // переключаемся на рабочую частоту
+        Afc_Delta_Saved = Time_Delta;
+        Time_Delta = _IQmpy(_IQ(2 * PI), afc_u(0)); // переключаемся на рабочую частоту
     }
 
     Afc_Count = Afc_Count + 1;
@@ -291,12 +313,12 @@ static void afc_step(void)
             // все точки пройдены: возвращаем исходную частоту сигнала
             Afc_Index = 0;
             Afc_Run = 0;
-            time_delta = Afc_Delta_Saved;
+            Time_Delta = Afc_Delta_Saved;
         }
         else
         {
-            // time_delta = 2*pi*f/FS - шаг фазы синуса за один отсчёт
-            time_delta = _IQmpy(_IQ(2 * PI), afc_u(Afc_Index));
+            // Time_Delta = 2*pi*f/FS - шаг фазы синуса за один отсчёт
+            Time_Delta = _IQmpy(_IQ(2 * PI), afc_u(Afc_Index));
         }
     }
 }
@@ -316,9 +338,9 @@ interrupt void timer0_isr(void)
     gpio0_clear();
 
 #if SIN_METHOD == SIN_METHOD_CHEBYSHEV
-    SIN_Value = sin_chebyshev(time);
+    SIN_Value = sin_chebyshev(Time);
 #else
-    SIN_Value = sin_cordic(time);
+    SIN_Value = sin_cordic(Time);
 #endif
     SIN_Value = _IQmpy(SIN_Value, _IQ(A1));
 
@@ -339,13 +361,19 @@ interrupt void timer0_isr(void)
         afc_step();
     }
 
-    time = time + time_delta;
-    if (time < 0)
+    _iq Period = _IQ(2 * PI);
+
+    if (Time >= Period - Time_Delta)
     {
-        time = time - _IQ(2 * PI);
+        Time = Time - (Period - Time_Delta);
     }
 
-    // Timer0 Interrupt Flag Clear
+    else
+    {
+        Time = Time + Time_Delta;
+    }
+
+    // timer0 Interrupt Flag Clear
     CpuTimer0Regs.TCR.bit.TIF = 1;
     // PIE Group1 Acknowledgement Reset
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
