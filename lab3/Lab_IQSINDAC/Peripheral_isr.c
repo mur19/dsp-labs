@@ -21,6 +21,8 @@ double A1;
 _iq sin_value_prev;
 _iq differentiation_sin;
 _iq differentiation_second_sin;
+_iq trapezoid_int_sin;
+_iq rectan_int_sin;
 _iq int_sin = _IQ(-1);
 _iq diff_prev = _IQ(1); 
 int epwm1_irq_cnt;

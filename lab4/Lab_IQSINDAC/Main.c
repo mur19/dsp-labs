@@ -6,6 +6,7 @@
 // #include "ADC.h"
 #include "GPIO.h"
 #include "Timer.h"
+#include "Peripheral_isr.h"
 // #include "QEP.h"
 // #include "CAN.h"
 // #include "MCBSP.h"
@@ -30,49 +31,50 @@ void main(void)
 	//	PWM_CONFIG pwm_config;
 	//	ADC_CONFIG adc_config;
 
-	// -- отключение WatchDog таймера
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ WatchDog пїЅпїЅпїЅпїЅпїЅпїЅпїЅ
 	disable_watchdog();
-	// -- глобальное отключение прерываний
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
 	disable_interrupts();
-	// -- общие настройки периферии контроллера
+	// -- пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
 	system_control_init();
 
-	// -- инициализация портов ввода-вывода
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ-пїЅпїЅпїЅпїЅпїЅпїЅ
 	gpio_init();
 
-	// -- инициализация структуры для настройки таймера
-	timer_config.period_in_cpu_cycles = 49L;
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ
+	// timer tick = CPU_FREQ / (prescale + 1) = 1 MHz, interrupt rate = FS
 	timer_config.prescale = 149;
-	// -- инициализация таймера и запуск
+	timer_config.period_in_cpu_cycles = CPU_FREQ / 150L / FS - 1;
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅ
 	timer0_init(&timer_config);
 
-	// -- Заполнение структуры для настройки PWM
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ PWM
 	//	pwm_config.period_in_cpu_cycles = TBPRDVALUE;
 	//	pwm_config.count_mode = PWM_COUNT_UP_DOWN;
 	//	pwm_config.tristate_enable = PWM_TRISTATE_DISABLE;
 	//	pwm_config.deadband = DBREDVALUE;
-	// -- Инициализация PWM
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ PWM
 	//	pwm_init(&pwm_config);
 
-	// -- Заполнение структуры для настройки АЦП
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ
 	//	adc_config.conversion_num = 3;
 	//	adc_config.conversion0_src = ADCINA0;
 	//	adc_config.conversion1_src = ADCINA1;
 	//	adc_config.conversion2_src = ADCINA2;
-	// -- Инициализация АЦП
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ
 	//	adc_init(&adc_config);
 
-	// -- Заполнение структуры для настройки QEP-1
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ QEP-1
 	//	qep_config.reset_mode = QEP_RESET_ON_MAXIMUM;
 	//	qep_config.resolution_in_discretes = 1999;
 	//	qep_config.value_to_compare = 0x500;
-	// -- Иницализация QEP-1
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ QEP-1
 	//	qep1_init(&qep_config);
 
-	// -- Инициализация CAN-A
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ CAN-A
 	//	cana_init();
 
-	// -- Инициализация MCPSB-B
+	// -- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ MCPSB-B
 	//	mcbspb_init();
 
 	// Initialize SPI for DAC Interface.
@@ -85,9 +87,12 @@ void main(void)
 	}
 	Null_Value = McbspbRegs.DRR1.all;
 
+	// Time_Delta = 2*pi*f/FS - phase step of the test sine per sample (f - its frequency)
 	Time_Delta = _IQ(0.00824 * PI);
 
 	Time = _IQ(0.);
+
+	sinc_init();
 
 	EINT;
 
@@ -97,7 +102,7 @@ void main(void)
 }
 
 //------------------------------------------------------------------------
-// процедура инициализации портов ввода-вывода
+// пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ-пїЅпїЅпїЅпїЅпїЅпїЅ
 void gpio_init(void)
 {
 	// -- LED pins initialization
@@ -144,13 +149,13 @@ void forever_loop(void)
 	}
 }
 
-// глобальное включение прерываний
+// пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
 void enable_interrupts(void)
 {
 	EINT;
 }
 
-// глобальное отключение прерываний
+// пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
 void disable_interrupts(void)
 {
 	DINT;
