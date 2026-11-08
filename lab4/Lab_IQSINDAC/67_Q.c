@@ -1,13 +1,15 @@
 #include "Timer.h"
 #include "Peripheral_isr.h"
-// #include "PWM.h"
-// #include "QEP.h"
+
 #include "DSP2833x_Device.h"
 #include "CPU_Rate.h"
-// #include "ADC.h"
-// #include "CAN.h"
+
 #include "GPIO.h"
 #include "IQMathLib.h"
+
+#if GLOBAL_Q != 28 || MATH_TYPE != IQ_MATH
+#error This implementation requires fixed-point IQ28 (GLOBAL_Q = 28).
+#endif
 
 void DAC_0_Write(int Value);
 void DAC_1_Write(int Value);
@@ -18,11 +20,11 @@ void DAC_1_Write(int Value);
 #define SIN_METHOD_CORDIC 2
 #define SIN_METHOD SIN_METHOD_CORDIC
 
-double A1;
+_iq A1 = _IQ(1.0);
 int epwm1_irq_cnt;
 _iq SIN_Value;
 int DAC_Value;
-extern _iq time_delta, time;
+extern _iq Time_Delta, Time;
 
 static _iq quadrant_reduce(_iq theta, int *sign)
 {
@@ -87,7 +89,7 @@ static _iq sin_cordic(_iq theta)
     int sign;
     _iq z = _IQ(0.0);
     _iq x = CORDIC_K_IDEAL;
-    // _iq x = CORDIC_K_REAL();
+
     _iq y = 0;
     int i;
     _iq poww = _IQ(1.0);
@@ -124,44 +126,82 @@ static _iq sin_cordic(_iq theta)
 }
 
 #define K 3
-#define IN_BITS 15
-int FOSR = 16   ;
 
-// unsigned нужен чтобы грамотно реализовать логику переполнения интеграторов
-// только в unsigned long разрешается переполнение
-unsigned long Sinc_Integr[K];
-unsigned long Sinc_Diff[K];
-unsigned long Sinc_Diff_Prev[K];
-int Sinc_Count = 0;
+_iq26 FOSR = _IQ26(16.0);
+_iq26 Sinc_Count = _IQ26(0.0);
+_iq Sinc_Fosr_Inv;
 
+_iq18 Sinc_Integr[K];
+_iq18 Sinc_Diff[K];
+_iq18 Sinc_Diff_Prev[K];
 _iq Sinc_A_Norm;
-int Sinc_DW;
 _iq Sinc_Out;
 int Sinc_Ready;
 int DAC_Sinc_Value;
 
+static _iq18 sinc_iq_add(_iq18 a, _iq18 b)
+{
+    _iq18 low = (a & 0xffffL) + (b & 0xffffL);
+    _iq18 high = (a >> 16) + (b >> 16) + (low >> 16);
+    high = high & 0xffffL;
+    if (high >= 0x8000L) high = high - 0x10000L;
+    return high * 0x10000L + (low & 0xffffL);
+}
+
+static _iq18 sinc_iq_sub(_iq18 a, _iq18 b)
+{
+    _iq18 low = (a & 0xffffL) - (b & 0xffffL);
+    _iq18 high = (a >> 16) - (b >> 16) + (low >> 16);
+    high = high & 0xffffL;
+    if (high >= 0x8000L) high = high - 0x10000L;
+    return high * 0x10000L + (low & 0xffffL);
+}
+
+static void afc_init(void);
+
+void sinc_init(void)
+{
+    _iq26 norm = _IQ26(1.0);
+    int i;
+
+    Sinc_Fosr_Inv = _IQ26toIQ(_IQ26div(_IQ26(1.0), FOSR));
+    for (i = 0; i < K; i++)
+    {
+        norm = _IQ26div(norm, FOSR);
+        Sinc_Integr[i] = _IQ18(0.0);
+        Sinc_Diff[i] = _IQ18(0.0);
+        Sinc_Diff_Prev[i] = _IQ18(0.0);
+    }
+    Sinc_A_Norm = _IQ26toIQ(norm);
+    Sinc_Count = _IQ26(0.0);
+    Sinc_Out = _IQ(0.0);
+    Sinc_Ready = 0;
+    DAC_Sinc_Value = 0;
+    afc_init();
+}
+
 void sinc_filter(_iq x)
 {
-    unsigned long v;
-//    unsigned long v_prev;
-    unsigned long in;
+    _iq18 x_scale;
+    _iq18 in;
     int i;
 
     Sinc_Ready = 0;
 
-    // IQ (Q28) -> входной код с IN_BITS битами после запятой
-    v = x >> (GLOBAL_Q - IN_BITS);
+    x_scale = _IQtoIQ18(x);
 
     for (i = K - 1; i > 0; i--)
     {
-        Sinc_Integr[i] = Sinc_Integr[i] + Sinc_Integr[i - 1];
+        Sinc_Integr[i] = sinc_iq_add(Sinc_Integr[i], Sinc_Integr[i - 1]);
     }
-    Sinc_Integr[0] = Sinc_Integr[0] + v;
 
-    Sinc_Count = Sinc_Count + 1;
+    Sinc_Integr[0] = sinc_iq_add(Sinc_Integr[0], x_scale);
+
+    Sinc_Count = Sinc_Count + _IQ26(1.0);
+
     if (Sinc_Count == FOSR)
     {
-        Sinc_Count = 0;
+        Sinc_Count = _IQ26(0.0);
 
         for (i = K - 1; i >= 0; i--)
         {
@@ -171,48 +211,48 @@ void sinc_filter(_iq x)
             else {
                 in = Sinc_Diff[i - 1];
             }
-            Sinc_Diff[i] = in - Sinc_Diff_Prev[i];
+            Sinc_Diff[i] = sinc_iq_sub(in, Sinc_Diff_Prev[i]);
             Sinc_Diff_Prev[i] = in;
         }
 
-//        for (i = 0; i < K; i++) {
-//            Sinc_A_Norm = _IQdiv(Sinc_A_Norm, FOSR);
-//        }
-        // нормировка и обратно в IQ (Q28)
-        Sinc_Out = _IQmpy((long)v, Sinc_A_Norm) << (GLOBAL_Q - IN_BITS);
+        Sinc_Out = _IQmpyIQX(Sinc_Diff[K - 1], 18, Sinc_A_Norm, GLOBAL_Q);
         Sinc_Ready = 1;
     }
 }
 
 #define AFC_N 128
 #define AFC_SETTLE 8
-#define AFC_MEAS 64
 
-long Afc_Freq[AFC_N];  // f_j, Гц
-_iq Afc_Meas[AFC_N];   // измеренная |H(f_j)|
-_iq Afc_Theory[AFC_N]; // желаемая |H(f_j)|
-int Afc_Run = 1;       // 1 - идёт измерение; чтобы повторить, поставить 1 в Watch Window
-int Afc_Index = 0;     // номер текущей точки j
-int Afc_Count = 0;     // выходных отсчётов на текущей точке
-_iq Afc_Peak = 0;
-_iq Afc_Delta_Saved;   // time_delta до начала измерения, восстанавливается после
+#define AFC_MEAS (4 * AFC_N)
 
-// f_j / FS
+long Afc_Freq[AFC_N];
+_iq Afc_Meas[AFC_N];
+_iq Afc_Theory[AFC_N];
+volatile int Afc_Run = 0;
+volatile int Afc_Done = 0;
+volatile int Afc_Error = 0;
+int Afc_Index = 0;
+int Afc_Count = 0;
+_iq Afc_Delta_Saved;
+static int Afc_Active = 0;
+static _iq Afc_In_Sin, Afc_In_Cos;
+static _iq Afc_Out_Sin, Afc_Out_Cos;
+
 static _iq afc_u(int j)
 {
     return (2 * j + 1) * (_IQ(1.0) / (4 * AFC_N));
 }
 
-// желаемая |H| на частоте u = f / FS
 static _iq afc_theory(_iq u)
 {
-    _iq b = _IQmpy(_IQ(PI), u); // pi*f/FS, от 0 до pi/2
-    _iq a = 0;                  // pi*f*FOSR/FS = FOSR*b, держим в [-pi, pi)
+    _iq b = _IQmpy(_IQ(PI), u);
+    _iq a = 0;
     _iq r;
     _iq h = _IQ(1.0);
+    _iq26 count;
     int i;
 
-    for (i = 0; i < FOSR; i++)
+    for (count = _IQ26(0.0); count < FOSR; count += _IQ26(1.0))
     {
         a = a + b;
         if (a >= _IQ(PI))
@@ -221,7 +261,7 @@ static _iq afc_theory(_iq u)
         }
     }
 
-    r = _IQdiv(_IQsin(a) / FOSR, _IQsin(b));
+    r = _IQdiv(_IQmpy(_IQsin(a), Sinc_Fosr_Inv), _IQsin(b));
     if (r < 0)
     {
         r = -r;
@@ -238,65 +278,118 @@ static void afc_init(void)
 {
     int j;
 
+    Afc_Run = 0;
+    Afc_Done = 0;
+    Afc_Error = 0;
+    Afc_Active = 0;
+    Afc_Index = 0;
+    Afc_Count = 0;
+    Afc_In_Sin = Afc_In_Cos = _IQ(0.0);
+    Afc_Out_Sin = Afc_Out_Cos = _IQ(0.0);
     for (j = 0; j < AFC_N; j++)
     {
-        Afc_Freq[j] = (2 * j + 1) / (time_delta * 4 * AFC_N); // (j + 0.5)*Fs/(2*AFC_N)
+        Afc_Freq[j] = (2L * j + 1) * FS / (4L * AFC_N);
         Afc_Theory[j] = afc_theory(afc_u(j));
         Afc_Meas[j] = 0;
     }
 }
 
-// вызывается на каждом новом выходном отсчёте фильтра
+static _iq afc_magnitude(_iq a, _iq b)
+{
+    _iq ratio;
+    _iq temp;
+
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    if (b > a)
+    {
+        temp = a;
+        a = b;
+        b = temp;
+    }
+    if (a == 0) return _IQ(0.0);
+    ratio = _IQdiv(b, a);
+    return _IQmpy(a, _IQsqrt(_IQ(1.0) + _IQmpy(ratio, ratio)));
+}
+
 static void afc_step(void)
 {
-    _iq y;
+    _iq ref_sin, ref_cos;
+    _iq input_amplitude, output_amplitude;
+    int j;
 
     if (Afc_Run == 0)
     {
+        if (Afc_Active)
+        {
+            Time_Delta = Afc_Delta_Saved;
+            Afc_Active = 0;
+            Afc_Index = 0;
+            Afc_Count = 0;
+        }
         return;
     }
 
-    // начало измерения: запоминаем частоту сигнала, ставим первую точку
-    if (Afc_Index == 0 && Afc_Count == 0)
+    if (!Afc_Active)
     {
-        Afc_Delta_Saved = time_delta;
-        time_delta = _IQmpy(_IQ(2 * PI), afc_u(0)); // переключаемся на рабочую частоту
+        Afc_Active = 1;
+        Afc_Done = 0;
+        Afc_Error = 0;
+        Afc_Index = 0;
+        Afc_Count = 0;
+        Afc_In_Sin = Afc_In_Cos = _IQ(0.0);
+        Afc_Out_Sin = Afc_Out_Cos = _IQ(0.0);
+        for (j = 0; j < AFC_N; j++) Afc_Meas[j] = _IQ(0.0);
+        Afc_Delta_Saved = Time_Delta;
+        Time_Delta = _IQmpy(_IQ(2 * PI), afc_u(0));
+        return;
     }
 
     Afc_Count = Afc_Count + 1;
     if (Afc_Count <= AFC_SETTLE)
     {
-        return; // пропуск первых AFC_SETTLE отсчетов
+        return;
     }
 
-    y = Sinc_Out;
-    if (y < 0)
-    {
-        y = -y;
-    }
-    if (y > Afc_Peak)
-    {
-        Afc_Peak = y;
-    }
+    ref_sin = _IQsin(Time);
+    ref_cos = _IQcos(Time);
+    Afc_In_Sin += _IQmpy(SIN_Value, ref_sin) / AFC_MEAS;
+    Afc_In_Cos += _IQmpy(SIN_Value, ref_cos) / AFC_MEAS;
+    Afc_Out_Sin += _IQmpy(Sinc_Out, ref_sin) / AFC_MEAS;
+    Afc_Out_Cos += _IQmpy(Sinc_Out, ref_cos) / AFC_MEAS;
 
     if (Afc_Count == AFC_SETTLE + AFC_MEAS)
     {
-        Afc_Meas[Afc_Index] = _IQdiv(Afc_Peak, _IQ(A1));
-        Afc_Peak = 0;
+        input_amplitude = afc_magnitude(Afc_In_Sin, Afc_In_Cos);
+        output_amplitude = afc_magnitude(Afc_Out_Sin, Afc_Out_Cos);
+        if (input_amplitude == 0)
+        {
+            Afc_Error = 1;
+            Afc_Run = 0;
+            Afc_Active = 0;
+            Time_Delta = Afc_Delta_Saved;
+            return;
+        }
+
+        Afc_Meas[Afc_Index] = _IQdiv(output_amplitude, input_amplitude);
+        Afc_In_Sin = Afc_In_Cos = _IQ(0.0);
+        Afc_Out_Sin = Afc_Out_Cos = _IQ(0.0);
         Afc_Count = 0;
         Afc_Index = Afc_Index + 1;
 
         if (Afc_Index == AFC_N)
         {
-            // все точки пройдены: возвращаем исходную частоту сигнала
+
             Afc_Index = 0;
             Afc_Run = 0;
-            time_delta = Afc_Delta_Saved;
+            Afc_Active = 0;
+            Time_Delta = Afc_Delta_Saved;
+            Afc_Done = 1;
         }
         else
         {
-            // time_delta = 2*pi*f/FS - шаг фазы синуса за один отсчёт
-            time_delta = _IQmpy(_IQ(2 * PI), afc_u(Afc_Index));
+
+            Time_Delta = _IQmpy(_IQ(2 * PI), afc_u(Afc_Index));
         }
     }
 }
@@ -310,17 +403,16 @@ void reducer(_iq *val) {
 
 interrupt void timer0_isr(void)
 {
-
-    A1 = 1;
+    _iq Period = _IQ(2 * PI);
 
     gpio0_clear();
 
 #if SIN_METHOD == SIN_METHOD_CHEBYSHEV
-    SIN_Value = sin_chebyshev(time);
+    SIN_Value = sin_chebyshev(Time);
 #else
-    SIN_Value = sin_cordic(time);
+    SIN_Value = sin_cordic(Time);
 #endif
-    SIN_Value = _IQmpy(SIN_Value, _IQ(A1));
+    SIN_Value = _IQmpy(SIN_Value, A1);
 
     reducer(&SIN_Value);
 
@@ -339,14 +431,17 @@ interrupt void timer0_isr(void)
         afc_step();
     }
 
-    time = time + time_delta;
-    if (time < 0)
+    if (Time >= Period - Time_Delta)
     {
-        time = time - _IQ(2 * PI);
+        Time = Time - (Period - Time_Delta);
     }
 
-    // Timer0 Interrupt Flag Clear
+    else
+    {
+        Time = Time + Time_Delta;
+    }
+
     CpuTimer0Regs.TCR.bit.TIF = 1;
-    // PIE Group1 Acknowledgement Reset
+
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
 }
