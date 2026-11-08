@@ -1,4 +1,4 @@
-#include "timer.h"
+#include "Timer.h"
 #include "Peripheral_isr.h"
 // #include "PWM.h"
 // #include "QEP.h"
@@ -138,6 +138,8 @@ int Sinc_Count = 0;
 
 _iq Sinc_A_Norm;
 
+static void afc_init(void);
+
 void sinc_init(void)
 {
     int i;
@@ -148,6 +150,7 @@ void sinc_init(void)
     {
         Sinc_A_Norm = Sinc_A_Norm / FOSR;
     }
+    afc_init();
 }
 
 
@@ -208,16 +211,22 @@ void sinc_filter(_iq x)
 
 #define AFC_N 128
 #define AFC_SETTLE 8
-#define AFC_MEAS 64
+// u_j = (2*j+1)/(4*AFC_N). За это число выходных отсчётов
+// набирается целое число периодов при целом FOSR, независимо от j.
+#define AFC_MEAS (4 * AFC_N)
 
 long Afc_Freq[AFC_N];  // f_j, Гц
 _iq Afc_Meas[AFC_N];   // измеренная |H(f_j)|
 _iq Afc_Theory[AFC_N]; // желаемая |H(f_j)|
-int Afc_Run = 1;       // 1 - идёт измерение; чтобы повторить, поставить 1 в Watch Window
+volatile int Afc_Run = 0;  // выключено; 1 в Watch Window запускает проход, 0 останавливает
+volatile int Afc_Done = 0; // 1 - все точки нового прохода готовы
+volatile int Afc_Error = 0; // 1 - нет измеримой основной гармоники на входе
 int Afc_Index = 0;     // номер текущей точки j
 int Afc_Count = 0;     // выходных отсчётов на текущей точке
-_iq Afc_Peak = 0;
 _iq Afc_Delta_Saved;   // Time_Delta до начала измерения, восстанавливается после
+static int Afc_Active = 0;
+static _iq Afc_In_Sin, Afc_In_Cos;
+static _iq Afc_Out_Sin, Afc_Out_Cos;
 
 // f_j / FS
 static _iq afc_u(int j)
@@ -260,29 +269,74 @@ static void afc_init(void)
 {
     int j;
 
+    Afc_Run = 0;
+    Afc_Done = 0;
+    Afc_Error = 0;
+    Afc_Active = 0;
+    Afc_Index = 0;
+    Afc_Count = 0;
+    Afc_In_Sin = Afc_In_Cos = _IQ(0.0);
+    Afc_Out_Sin = Afc_Out_Cos = _IQ(0.0);
     for (j = 0; j < AFC_N; j++)
     {
-        Afc_Freq[j] = (2 * j + 1) / (Time_Delta * 4 * AFC_N); // (j + 0.5)*Fs/(2*AFC_N)
+        Afc_Freq[j] = (2L * j + 1) * FS / (4L * AFC_N); // целые Гц для оси графика
         Afc_Theory[j] = afc_theory(afc_u(j));
         Afc_Meas[j] = 0;
     }
 }
 
-// вызывается на каждом новом выходном отсчёте фильтра
+
+static _iq afc_magnitude(_iq a, _iq b)
+{
+    _iq ratio;
+    _iq temp;
+
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    if (b > a)
+    {
+        temp = a;
+        a = b;
+        b = temp;
+    }
+    if (a == 0) return _IQ(0.0);
+    ratio = _IQdiv(b, a);
+    return _IQmpy(a, _IQsqrt(_IQ(1.0) + _IQmpy(ratio, ratio)));
+}
+
+
 static void afc_step(void)
 {
-    _iq y;
+    _iq ref_sin, ref_cos;
+    _iq input_amplitude, output_amplitude;
+    int j;
 
     if (Afc_Run == 0)
     {
+        if (Afc_Active)
+        {
+            Time_Delta = Afc_Delta_Saved;
+            Afc_Active = 0;
+            Afc_Index = 0;
+            Afc_Count = 0;
+        }
         return;
     }
 
-    // начало измерения: запоминаем частоту сигнала, ставим первую точку
-    if (Afc_Index == 0 && Afc_Count == 0)
+    
+    if (!Afc_Active)
     {
+        Afc_Active = 1;
+        Afc_Done = 0;
+        Afc_Error = 0;
+        Afc_Index = 0;
+        Afc_Count = 0;
+        Afc_In_Sin = Afc_In_Cos = _IQ(0.0);
+        Afc_Out_Sin = Afc_Out_Cos = _IQ(0.0);
+        for (j = 0; j < AFC_N; j++) Afc_Meas[j] = _IQ(0.0);
         Afc_Delta_Saved = Time_Delta;
-        Time_Delta = _IQmpy(_IQ(2 * PI), afc_u(0)); // переключаемся на рабочую частоту
+        Time_Delta = _IQmpy(_IQ(2 * PI), afc_u(0));
+        return;
     }
 
     Afc_Count = Afc_Count + 1;
@@ -291,29 +345,41 @@ static void afc_step(void)
         return; // пропуск первых AFC_SETTLE отсчетов
     }
 
-    y = Sinc_Out;
-    if (y < 0)
-    {
-        y = -y;
-    }
-    if (y > Afc_Peak)
-    {
-        Afc_Peak = y;
-    }
+    
+    ref_sin = _IQsin(Time);
+    ref_cos = _IQcos(Time);
+    Afc_In_Sin += _IQmpy(SIN_Value, ref_sin) / AFC_MEAS;
+    Afc_In_Cos += _IQmpy(SIN_Value, ref_cos) / AFC_MEAS;
+    Afc_Out_Sin += _IQmpy(Sinc_Out, ref_sin) / AFC_MEAS;
+    Afc_Out_Cos += _IQmpy(Sinc_Out, ref_cos) / AFC_MEAS;
 
     if (Afc_Count == AFC_SETTLE + AFC_MEAS)
     {
-        Afc_Meas[Afc_Index] = _IQdiv(Afc_Peak, _IQ(A1));
-        Afc_Peak = 0;
+        input_amplitude = afc_magnitude(Afc_In_Sin, Afc_In_Cos);
+        output_amplitude = afc_magnitude(Afc_Out_Sin, Afc_Out_Cos);
+        if (input_amplitude == 0)
+        {
+            Afc_Error = 1;
+            Afc_Run = 0;
+            Afc_Active = 0;
+            Time_Delta = Afc_Delta_Saved;
+            return;
+        }
+        // Общий множитель 2 для амплитуд сокращается в отношении.
+        Afc_Meas[Afc_Index] = _IQdiv(output_amplitude, input_amplitude);
+        Afc_In_Sin = Afc_In_Cos = _IQ(0.0);
+        Afc_Out_Sin = Afc_Out_Cos = _IQ(0.0);
         Afc_Count = 0;
         Afc_Index = Afc_Index + 1;
 
         if (Afc_Index == AFC_N)
         {
-            // все точки пройдены: возвращаем исходную частоту сигнала
+            
             Afc_Index = 0;
             Afc_Run = 0;
+            Afc_Active = 0;
             Time_Delta = Afc_Delta_Saved;
+            Afc_Done = 1;
         }
         else
         {
